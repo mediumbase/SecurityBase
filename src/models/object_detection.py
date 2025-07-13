@@ -1,188 +1,106 @@
-import tflite_runtime.interpreter as tflite
-import logging
-import os
-import subprocess
-import numpy as np
 import cv2
+import numpy as np
+import logging
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
-def check_tpu():
-    """Check if TPU is detected via lsusb."""
-    try:
-        result = subprocess.run(["lsusb"], capture_output=True, text=True, check=True)
-        if "1a6e:089a" in result.stdout:
-            logging.info("TPU detected (Global Unichip 1a6e:089a)")
-            return True
-        logging.warning("TPU not detected in lsusb")
-        return False
-    except Exception as e:
-        logging.error(f"Error checking TPU: {e}")
-        return False
-
-def load_models(models):
-    """
-    Load TFLite models and their labels for object detection, with Edge TPU support.
-    
-    Args:
-        models (dict): Dictionary of model categories with model_path, label_path, and is_ssd.
-    
-    Returns:
-        tuple: (interpreters, labels)
-    """
-    interpreters = {}
-    labels = {}
-    libedgetpu_path = "/usr/lib/libedgetpu.so.1"  # Common system path
-    tpu_available = check_tpu()
-
-    for category, config in models.items():
-        model_path = config["model_path"]
-        label_path = config["label_path"]
-        
-        try:
-            interpreter = None
-            if "edgetpu" in model_path and os.path.exists(libedgetpu_path) and tpu_available:
-                try:
-                    delegate = tflite.load_delegate(libedgetpu_path)
-                    interpreter = tflite.Interpreter(
-                        model_path=model_path,
-                        experimental_delegates=[delegate]
-                    )
-                    logging.info(f"Loaded {category} model with Edge TPU: {model_path}")
-                except Exception as e:
-                    logging.warning(f"Edge TPU failed for {category}: {e}. Falling back to CPU.")
-                    interpreter = tflite.Interpreter(model_path=model_path)
-                    logging.info(f"Loaded {category} model on CPU: {model_path}")
-            else:
-                interpreter = tflite.Interpreter(model_path=model_path)
-                logging.info(f"Loaded {category} model on CPU: {model_path}")
-            
-            interpreter.allocate_tensors()
-            interpreters[category] = interpreter
-            
-            with open(label_path, "r") as f:
-                labels[category] = [line.strip() for line in f.readlines()]
-            logging.info(f"Loaded labels for {category}: {label_path}")
-            
-        except Exception as e:
-            logging.error(f"Failed to load model {category}: {e}")
-            continue
-    
-    return interpreters, labels
-
 class ObjectDetector:
-    def __init__(self, model_path, label_path, is_ssd=False):
-        """
-        Initialize the ObjectDetector with a TFLite model and labels.
-        
-        Args:
-            model_path (str): Path to the TFLite model file.
-            label_path (str): Path to the label file.
-            is_ssd (bool): Whether the model is an SSD model.
-        """
-        self.is_ssd = is_ssd
-        self.model_path = model_path
-        self.label_path = label_path
-        self.interpreter = None
-        self.labels = []
-        self.input_details = None
-        self.output_details = None
-        
-        # Load model and labels
-        try:
-            models = {"default": {"model_path": model_path, "label_path": label_path}}
-            interpreters, labels_dict = load_models(models)
-            self.interpreter = interpreters.get("default")
-            self.labels = labels_dict.get("default", [])
-            if not self.interpreter or not self.labels:
-                raise ValueError("Failed to load model or labels")
-            
-            self.input_details = self.interpreter.get_input_details()
-            self.output_details = self.interpreter.get_output_details()
-            logging.info(f"ObjectDetector initialized for {model_path}")
-        except Exception as e:
-            logging.error(f"Failed to initialize ObjectDetector for {model_path}: {e}")
-            raise
+    def __init__(self):
+        self.fgbg = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=16, detectShadows=False)
+        logging.info("ObjectDetector initialized")
 
-    def preprocess_image(self, image):
-        """
-        Preprocess the input image to match model requirements.
-        
-        Args:
-            image: Input image (numpy array).
-        
-        Returns:
-            Preprocessed image (numpy array).
-        """
-        input_shape = self.input_details[0]["shape"]
-        input_height, input_width = input_shape[1], input_shape[2]
-        image_resized = cv2.resize(image, (input_width, input_height))
-        
-        # Handle input data type
-        input_dtype = self.input_details[0]["dtype"]
-        if input_dtype == np.uint8:
-            input_image = image_resized
+    def validate_interpreters(self, interpreters, labels):
+        if not interpreters or not labels:
+            logging.warning("Empty interpreters or labels provided")
+            return False
+        for category in interpreters:
+            if category not in labels or not labels[category]:
+                logging.warning(f"Invalid labels for category: {category}")
+                return False
+        return True
+
+    def generate_frames(self, camera, interpreters, labels, last_detections, max_retries=3):
+        if not self.validate_interpreters(interpreters, labels):
+            logging.warning("Streaming raw feed due to invalid interpreters/labels")
         else:
-            input_image = image_resized.astype(np.float32) / 255.0
-        
-        # Add batch dimension
-        input_image = np.expand_dims(input_image, axis=0)
-        return input_image
+            logging.info(f"Interpreters loaded for: {list(interpreters.keys())}")
 
-    def detect(self, image):
-        """
-        Perform object detection on the input image.
-        
-        Args:
-            image: Input image (numpy array).
-        
-        Returns:
-            List of detections with bbox, label, and confidence.
-        """
-        try:
-            input_image = self.preprocess_image(image)
-            self.interpreter.set_tensor(self.input_details[0]["index"], input_image)
-            self.interpreter.invoke()
-            
-            detections = []
-            if self.is_ssd:
-                # SSD model outputs: [boxes, classes, scores, num_detections]
-                boxes = self.interpreter.get_tensor(self.output_details[0]["index"])[0]
-                classes = self.interpreter.get_tensor(self.output_details[1]["index"])[0]
-                scores = self.interpreter.get_tensor(self.output_details[2]["index"])[0]
-                num_detections = int(self.interpreter.get_tensor(self.output_details[3]["index"])[0])
-                
-                for i in range(num_detections):
-                    if scores[i] > 0.3:  # Confidence threshold
-                        ymin, xmin, ymax, xmax = boxes[i]
-                        h, w = image.shape[:2]
-                        bbox = [
-                            int(xmin * w),
-                            int(ymin * h),
-                            int((xmax - xmin) * w),
-                            int((ymax - ymin) * h)
-                        ]
-                        label_idx = int(classes[i])
-                        label = self.labels[label_idx] if label_idx < len(self.labels) else "Unknown"
-                        detections.append({
-                            "bbox": bbox,
-                            "label": label,
-                            "confidence": float(scores[i]),
-                            "priority": "high" if scores[i] > 0.7 else "medium" if scores[i] > 0.5 else "low"
-                        })
-            else:
-                # Non-SSD (e.g., MobileNet) outputs: [scores]
-                scores = self.interpreter.get_tensor(self.output_details[0]["index"])[0]
-                label_idx = np.argmax(scores)
-                if scores[label_idx] > 0.3:  # Confidence threshold
-                    detections.append({
-                        "bbox": [0, 0, image.shape[1], image.shape[0]],  # Full image for non-SSD
-                        "label": self.labels[label_idx] if label_idx < len(self.labels) else "Unknown",
-                        "confidence": float(scores[label_idx]),
-                        "priority": "high" if scores[label_idx] > 0.7 else "medium" if scores[label_idx] > 0.5 else "low"
-                    })
-            
-            return detections
-        except Exception as e:
-            logging.error(f"Detection error: {e}")
-            return []
+        if camera is None or not camera.isOpened():
+            logging.error("Camera is None or not opened")
+            return
+
+        logging.info("Starting frame generation")
+        retry_count = 0
+        while retry_count < max_retries:
+            try:
+                success, frame = camera.read()
+                if not success or frame is None:
+                    logging.error("Failed to read valid frame from camera")
+                    retry_count += 1
+                    continue
+
+                logging.debug(f"Frame shape: {frame.shape}")
+                # Background subtraction
+                fgmask = self.fgbg.apply(frame)
+                _, fgmask = cv2.threshold(fgmask, 127, 255, cv2.THRESH_BINARY)
+                contours, _ = cv2.findContours(fgmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for contour in contours:
+                    if cv2.contourArea(contour) > 500:
+                        (x, y, w, h) = cv2.boundingRect(contour)
+                        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+
+                # Object detection
+                if interpreters:
+                    for category, interpreter in interpreters.items():
+                        try:
+                            input_details = interpreter.get_input_details()
+                            output_details = interpreter.get_output_details()
+                            input_shape = input_details[0]['shape']
+
+                            img = cv2.resize(frame, (input_shape[1], input_shape[2]))
+                            img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                            input_data = np.expand_dims(img_rgb, axis=0).astype(np.uint8)
+
+                            interpreter.set_tensor(input_details[0]['index'], input_data)
+                            interpreter.invoke()
+                            output_data = interpreter.get_tensor(output_details[0]['index'])
+                            predicted_label_idx = np.argmax(output_data[0])
+                            confidence = output_data[0][predicted_label_idx]
+
+                            if predicted_label_idx >= len(labels[category]):
+                                logging.warning(f"Label index {predicted_label_idx} out of range for {category}")
+                                continue
+
+                            label = labels[category][predicted_label_idx].strip()
+                            last_detections.append({
+                                "category": category,
+                                "label": label,
+                                "confidence": float(confidence)
+                            })
+
+                            text_y = 30 + 40 * list(interpreters.keys()).index(category)
+                            cv2.putText(frame, f"{category.upper()}: {label} ({confidence:.2f})",
+                                        (10, text_y), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+                        except Exception as e:
+                            logging.error(f"Error in {category} detection: {e}")
+
+                ret, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+                if not ret:
+                    logging.warning("Failed to encode frame")
+                    continue
+                frame_bytes = buffer.tobytes()
+                yield (b'--frame\r\n'
+                       b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                retry_count = 0  # Reset on success
+            except Exception as e:
+                logging.error(f"Frame generation error: {e}")
+                retry_count += 1
+                if retry_count >= max_retries:
+                    break
+                time.sleep(1)
+
+        logging.info("Frame generation stopped")
+
+    def release(self):
+        self.fgbg = None
+        logging.info("ObjectDetector resources released")

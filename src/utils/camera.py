@@ -1,145 +1,83 @@
-#!/usr/bin/env python3
-import cv2
-import numpy as np
-import freenect
+import av
 import logging
-import time
+import numpy as np
+import cv2
 import os
+import time
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 
 class CameraManager:
-    def __init__(self, camera_index=0, width=640, height=480, motion_threshold=25, min_motion_area=500, snapshot_dir="media/snapshots"):
-        self.camera_index = camera_index  # Unused for Kinect, kept for compatibility
+    def __init__(self, width=640, height=480, motion_threshold=25, min_motion_area=500, snapshot_dir="media/snapshots", device="/dev/video0"):
         self.width = width
         self.height = height
         self.motion_threshold = motion_threshold
         self.min_motion_area = min_motion_area
         self.snapshot_dir = snapshot_dir
-        self.camera = None
+        self.device = os.getenv("CAMERA_DEVICE", device)
+        self.container = None
+        self.stream = None
         self.prev_frame = None
-        self.use_kinect = True
-        self.kinect_device = None
-        self.last_tilt_angle = 0
-        self.initialize_camera()
+        self.open_camera()
+        logging.info(f"Initialized camera with PyAV: {self.width}x{self.height} @ 30 FPS")
 
-    def initialize_camera(self):
-        """Initialize Kinect only; no USB camera fallback."""
-        max_attempts = 3
-        for attempt in range(max_attempts):
+    def open_camera(self, max_retries=3, retry_delay=1):
+        for attempt in range(max_retries):
             try:
-                depth, _ = freenect.sync_get_depth()
-                rgb, _ = freenect.sync_get_video()
-                if depth is not None and rgb is not None:
-                    self.kinect_device = freenect.open_device(freenect.init(), 0)
-                    logging.info("Kinect initialized successfully")
+                self.container = av.open(self.device, options={"video_size": f"{self.width}x{self.height}", "framerate": "30"})
+                self.stream = next(s for s in self.container.streams if s.type == "video")
+                logging.info("Camera opened successfully with PyAV")
+                frame = self.get_frame()
+                logging.info(f"Initial frame: {'Success' if frame is not None else 'None'}")
+                if frame is not None:
                     return
+                logging.error("Failed to get initial frame")
             except Exception as e:
-                if "LIBUSB_ERROR_BUSY" in str(e):
-                    logging.info(f"Ignoring LIBUSB_ERROR_BUSY (attempt {attempt + 1}/{max_attempts})")
-                else:
-                    logging.error(f"Kinect initialization failed (attempt {attempt + 1}/{max_attempts}): {e}")
-                time.sleep(1)
-        logging.error("Kinect initialization failed after all attempts")
-        raise RuntimeError("Failed to initialize Kinect; this project requires Kinect-only operation")
+                logging.error(f"Attempt {attempt + 1}/{max_retries} to open camera failed: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+        self.container = None
+        logging.error("Failed to open camera after retries")
 
-    def set_tilt(self, angle):
-        """Set Kinect tilt angle (-31 to +31 degrees)."""
-        if not self.use_kinect or self.kinect_device is None:
-            logging.error("Cannot set tilt: Kinect not initialized")
-            return False
-        try:
-            angle = max(-31, min(31, angle))
-            freenect.set_tilt_degs(self.kinect_device, angle)
-            self.last_tilt_angle = angle
-            logging.info(f"Kinect tilt set to {angle} degrees")
-            return True
-        except Exception as e:
-            logging.error(f"Failed to set Kinect tilt: {e}")
-            return False
+    def is_opened(self):
+        return self.container is not None
 
-    def get_tilt(self):
-        """Get the current Kinect tilt angle."""
-        if not self.use_kinect or self.kinect_device is None:
-            logging.error("Cannot get tilt: Kinect not initialized")
-            return None
-        try:
-            logging.info(f"Current Kinect tilt angle: {self.last_tilt_angle}")
-            return self.last_tilt_angle
-        except Exception as e:
-            logging.error(f"Failed to get Kinect tilt: {e}")
-            return None
-
-    def get_depth(self, colormap="JET"):
-        """Get depth frame from Kinect with specified colormap."""
-        if not self.use_kinect:
-            return None
-        try:
-            depth, _ = freenect.sync_get_depth()
-            if depth is None:
-                logging.error("Failed to get Kinect depth frame")
-                return None
-            depth = np.clip(depth, 0, 2**11 - 1)
-            depth = (depth / (2**11 - 1) * 255).astype(np.uint8)
-            colormap_map = {
-                "JET": cv2.COLORMAP_JET,
-                "HOT": cv2.COLORMAP_HOT,
-                "RAINBOW": cv2.COLORMAP_RAINBOW,
-                "BONE": cv2.COLORMAP_BONE,
-                "NONE": None
-            }
-            if colormap_map.get(colormap) is not None:
-                depth = cv2.applyColorMap(depth, colormap_map[colormap])
-            else:
-                depth = cv2.cvtColor(depth, cv2.COLOR_GRAY2BGR)
-            return depth
-        except Exception as e:
-            logging.error(f"Kinect depth capture failed: {e}")
-            return None
-
-    def get_frame(self, mode="rgb", colormap="JET"):
-        """Get a frame from Kinect with specified mode and colormap."""
-        if not self.use_kinect:
-            logging.error("Kinect not initialized")
-            return None
-        if mode.lower() == "depth":
-            frame = self.get_depth(colormap=colormap)
-            if frame is None:
-                return None
-        else:
-            try:
-                rgb, _ = freenect.sync_get_video()
-                if rgb is None:
-                    logging.error("Failed to get Kinect RGB frame")
-                    return None
-                frame = cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR)
-            except Exception as e:
-                logging.error(f"Kinect RGB capture failed: {e}")
-                return None
-        frame = cv2.resize(frame, (self.width, self.height))
-
-        # Apply motion detection overlay
+    def _preprocess_frame(self, frame):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         gray = cv2.GaussianBlur(gray, (21, 21), 0)
-        if self.prev_frame is not None:
-            frame_delta = cv2.absdiff(self.prev_frame, gray)
-            thresh = cv2.threshold(frame_delta, self.motion_threshold, 255, cv2.THRESH_BINARY)[1]
-            thresh = cv2.dilate(thresh, None, iterations=2)
-            contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            for contour in contours:
-                if cv2.contourArea(contour) >= self.min_motion_area:
-                    (x, y, w, h) = cv2.boundingRect(contour)
-                    cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
-                    cv2.putText(frame, "Motion", (x, y - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-        self.prev_frame = gray
-        return frame
+        return gray
+
+    def get_frame(self):
+        if not self.is_opened():
+            self.open_camera()
+            if not self.is_opened():
+                return None
+        try:
+            for packet in self.container.decode(self.stream):
+                frame = packet.to_ndarray(format="bgr24")
+                gray = self._preprocess_frame(frame)
+                if self.prev_frame is None:
+                    self.prev_frame = gray
+                    return frame
+                frame_delta = cv2.absdiff(self.prev_frame, gray)
+                thresh = cv2.threshold(frame_delta, self.motion_threshold, 255, cv2.THRESH_BINARY)[1]
+                thresh = cv2.dilate(thresh, None, iterations=2)
+                contours, _ = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                for contour in contours:
+                    if cv2.contourArea(contour) >= self.min_motion_area:
+                        (x, y, w, h) = cv2.boundingRect(contour)
+                        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+                self.prev_frame = gray
+                return frame
+        except Exception as e:
+            logging.error(f"Error reading frame: {e}")
+            self.container = None
+            return None
 
     def detect_motion(self, frame):
-        """Detect motion in the frame using background subtraction."""
         if frame is None or self.prev_frame is None:
             return False
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        gray = cv2.GaussianBlur(gray, (21, 21), 0)
+        gray = self._preprocess_frame(frame)
         frame_delta = cv2.absdiff(self.prev_frame, gray)
         thresh = cv2.threshold(frame_delta, self.motion_threshold, 255, cv2.THRESH_BINARY)[1]
         thresh = cv2.dilate(thresh, None, iterations=2)
@@ -149,29 +87,21 @@ class CameraManager:
                 return True
         return False
 
-    def release(self):
-        """Release Kinect resources."""
-        if self.use_kinect:
-            try:
-                if self.kinect_device is not None:
-                    freenect.close_device(self.kinect_device)
-                freenect.sync_stop()
-                logging.info("Kinect stopped")
-            except Exception as e:
-                logging.error(f"Error stopping Kinect: {e}")
-        self.camera = None
-        self.kinect_device = None
+    def update_resolution(self, width, height):
+        self.width = width
+        self.height = height
+        if self.container:
+            self.release()
+            self.open_camera()
 
-    @staticmethod
-    def diagnose_camera_issues():
-        """Diagnose Kinect availability."""
-        diagnostics = {}
-        try:
-            depth, _ = freenect.sync_get_depth()
-            if depth is not None:
-                diagnostics["Kinect"] = "Available"
-            else:
-                diagnostics["Kinect"] = "Not available"
-        except Exception as e:
-            diagnostics["Kinect"] = f"Not available: {str(e)}"
-        return diagnostics
+    def update_fps(self, fps):
+        if self.container:
+            self.release()
+            self.open_camera()
+
+    def release(self):
+        if self.container:
+            self.container.close()
+            self.container = None
+            self.prev_frame = None
+            logging.info("Camera released")
