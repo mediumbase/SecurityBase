@@ -93,8 +93,7 @@ async function loadCameraParams() {
     try {
         const response = await fetch('/camera_params');
         const data = await response.json();
-        const resolutionSelect = document.getElementById('resolution');
-        resolutionSelect.value = data.resolution || '640x480';
+        document.getElementById('resolution').value = data.resolution || '640x480';
         document.getElementById('fps').value = data.fps;
         document.getElementById('motion_threshold').value = data.motion_threshold;
         document.getElementById('min_motion_area').value = data.min_motion_area;
@@ -106,7 +105,14 @@ async function loadCameraParams() {
 
 async function updateCameraControls(retries = 3, delay = 1000) {
     const form = document.getElementById('camera-controls-form');
-    const loadingDiv = document.getElementById('controls-loading') || document.createElement('div');
+    let loadingDiv = document.getElementById('controls-loading');
+    if (!loadingDiv) {
+        loadingDiv = document.createElement('div');
+        loadingDiv.id = 'controls-loading';
+        loadingDiv.className = 'text-muted';
+        loadingDiv.textContent = 'Loading controls...';
+        form.parentNode.insertBefore(loadingDiv, form);
+    }
 
     for (let attempt = 1; attempt <= retries; attempt++) {
         try {
@@ -179,13 +185,13 @@ async function updateCameraControls(retries = 3, delay = 1000) {
 
             const submitBtn = document.createElement('button');
             submitBtn.type = 'submit';
-            submitBtn.className = 'app-btn btn-primary';
+            submitBtn.className = 'app-btn btn-primary btn-sm';
             submitBtn.textContent = 'Apply';
             form.appendChild(submitBtn);
 
             const resetBtn = document.createElement('button');
             resetBtn.type = 'button';
-            resetBtn.className = 'app-btn btn-outline';
+            resetBtn.className = 'app-btn btn-outline btn-sm';
             resetBtn.textContent = 'Reset to Default';
             resetBtn.addEventListener('click', async () => {
                 try {
@@ -210,7 +216,7 @@ async function updateCameraControls(retries = 3, delay = 1000) {
 
             const nightVisionBtn = document.createElement('button');
             nightVisionBtn.type = 'button';
-            nightVisionBtn.className = 'app-btn btn-primary';
+            nightVisionBtn.className = 'app-btn btn-primary btn-sm';
             nightVisionBtn.textContent = 'Night Vision';
             nightVisionBtn.addEventListener('click', async () => {
                 try {
@@ -237,7 +243,7 @@ async function updateCameraControls(retries = 3, delay = 1000) {
             console.error(`Attempt ${attempt}/${retries} failed: ${error.message}`);
             if (attempt === retries) {
                 form.innerHTML = `<p class="error">Failed to load controls after ${retries} attempts: ${error.message}</p>`;
-                if (loadingDiv) loadingDiv.style.display = 'none';
+                loadingDiv.style.display = 'none';
             } else {
                 await new Promise(resolve => setTimeout(resolve, delay));
             }
@@ -245,24 +251,18 @@ async function updateCameraControls(retries = 3, delay = 1000) {
     }
 }
 
-function toggleFullScreen() {
+document.getElementById('video-feed').addEventListener('click', () => {
     const videoContainer = document.getElementById('video-feed-container');
-    const toggleButton = document.getElementById('fullscreen-toggle');
-
     if (!document.fullscreenElement) {
-        videoContainer.requestFullscreen().then(() => {
-            toggleButton.textContent = 'Exit Full Screen';
-        }).catch(err => {
+        videoContainer.requestFullscreen().catch(err => {
             console.error(`Error enabling full-screen: ${err.message}`);
         });
     } else {
-        document.exitFullscreen().then(() => {
-            toggleButton.textContent = 'Full Screen';
-        }).catch(err => {
+        document.exitFullscreen().catch(err => {
             console.error(`Error exiting full-screen: ${err.message}`);
         });
     }
-}
+});
 
 document.getElementById('camera-params-form').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -358,8 +358,6 @@ toggle.addEventListener('change', async () => {
 document.getElementById('load-more').addEventListener('click', () => {
     updateSnapshots(currentPage + 1);
 });
-
-document.getElementById('fullscreen-toggle').addEventListener('click', toggleFullScreen);
 
 setInterval(() => updateSnapshots(1), 5000);
 setInterval(updateLogs, 5000);

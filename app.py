@@ -277,10 +277,15 @@ def night_vision():
             "exposure_time_absolute": 500
         }
         with camera_lock:
+            # Set white_balance_automatic first to enable white_balance_temperature
+            cmd = ['v4l2-ctl', '-d', '/dev/video0', '--set-ctrl', 'white_balance_automatic=0']
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+            logging.debug(f"Set white_balance_automatic=0: {result.stdout}")
             for control, value in night_settings.items():
-                cmd = ['v4l2-ctl', '-d', '/dev/video0', '--set-ctrl', f'{control}={value}']
-                result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-                logging.debug(f"Set night vision {control}={value}: {result.stdout}")
+                if control != "white_balance_automatic":  # Already set
+                    cmd = ['v4l2-ctl', '-d', '/dev/video0', '--set-ctrl', f'{control}={value}']
+                    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+                    logging.debug(f"Set night vision {control}={value}: {result.stdout}")
         logging.info("Night vision settings applied")
         return jsonify({"message": "Night vision settings applied"}), 200
     except subprocess.CalledProcessError as e:
@@ -303,10 +308,14 @@ def camera_controls():
     if request.method == "POST":
         data = request.get_json() or {}
         try:
+            if "white_balance_temperature" in data and data.get("white_balance_automatic", 1) == 0:
+                cmd = ['v4l2-ctl', '-d', '/dev/video0', '--set-ctrl', 'white_balance_automatic=0']
+                subprocess.run(cmd, check=True, capture_output=True, text=True)
             for control, value in data.items():
-                cmd = ['v4l2-ctl', '-d', '/dev/video0', '--set-ctrl', f'{control}={value}']
-                result = subprocess.run(cmd, check=True, capture_output=True, text=True)
-                logging.debug(f"Set {control}={value}: {result.stdout}")
+                if control != "white_balance_automatic":  # Handled above if needed
+                    cmd = ['v4l2-ctl', '-d', '/dev/video0', '--set-ctrl', f'{control}={value}']
+                    result = subprocess.run(cmd, check=True, capture_output=True, text=True)
+                    logging.debug(f"Set {control}={value}: {result.stdout}")
             logging.info(f"Camera controls updated: {data}")
             return jsonify({"message": "Camera controls updated"}), 200
         except subprocess.CalledProcessError as e:

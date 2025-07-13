@@ -22,7 +22,6 @@
                 <div class="card-content">
                     <div class="card-header">
                         <h5>Camera Metadata</h5>
-                        <button id="fullscreen-toggle" class="app-btn btn-outline">Full Screen</button>
                     </div>
                     <ul id="metadata-list" class="list-unstyled">
                         <li>Resolution: <span id="meta-resolution">N/A</span></li>
@@ -43,7 +42,7 @@
                         <button id="clear-snapshots" class="app-btn btn-danger btn-sm">Delete All</button>
                     </div>
                     <ul id="snapshot-list" class="list-unstyled scrollable"></ul>
-                    <button id="load-more" class="app-btn btn-primary">Load More</button>
+                    <button id="load-more" class="app-btn btn-primary btn-sm">Load More</button>
                 </div>
             </div>
         </section>
@@ -62,7 +61,6 @@
             <div class="card">
                 <div class="card-content">
                     <form id="camera-params-form">
-                        <!-- Resolution dropdown with common camera resolutions; use 640x480 for best compatibility, 1920x1080 may increase heat -->
                         <div class="form-group">
                             <label for="resolution">Resolution (Min: 320x240, Max: 1920x1080):</label>
                             <select id="resolution" name="resolution" class="form-control form-control-sm">
@@ -72,17 +70,14 @@
                                 <option value="1920x1080">1920x1080 (Full HD, high heat)</option>
                             </select>
                         </div>
-                        <!-- FPS: Higher values increase CPU usage and heat; 30 is optimal for most cases -->
                         <div class="form-group">
                             <label for="fps">FPS (Min: 1, Max: 60):</label>
                             <input type="number" id="fps" name="fps" value="30" min="1" max="60" class="form-control form-control-sm">
                         </div>
-                        <!-- Motion Threshold: Higher values reduce false positives but may miss subtle motion -->
                         <div class="form-group">
                             <label for="motion_threshold">Motion Threshold (Higher values reduce false positives):</label>
                             <input type="number" id="motion_threshold" name="motion_threshold" value="25" min="1" class="form-control form-control-sm">
                         </div>
-                        <!-- Min Motion Area: Larger values ignore small objects, reducing noise -->
                         <div class="form-group">
                             <label for="min_motion_area">Min Motion Area (Larger values ignore small objects):</label>
                             <input type="number" id="min_motion_area" name="min_motion_area" value="500" min="1" class="form-control form-control-sm">
@@ -113,12 +108,10 @@
                         <label class="form-check-label" for="timelapse-toggle">Enable Time-Lapse</label>
                     </div>
                     <div id="timelapse-settings" class="hidden">
-                        <!-- Interval: Time between snapshots in seconds -->
                         <div class="form-group">
                             <label for="interval">Interval (s):</label>
                             <input type="number" id="interval" name="interval" value="60" min="1" class="form-control form-control-sm">
                         </div>
-                        <!-- Number of Images: Total snapshots to capture -->
                         <div class="form-group">
                             <label for="num_images">Images:</label>
                             <input type="number" id="num_images" name="num_images" value="10" min="1" class="form-control form-control-sm">
