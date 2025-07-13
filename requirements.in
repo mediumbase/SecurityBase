@@ -1,0 +1,8 @@
+Flask
+tflite-runtime
+opencv-python
+pytesseract
+numpy
+imutils
+libfreenect
+python-dotenv
