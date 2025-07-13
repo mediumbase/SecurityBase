@@ -1,7 +1,0 @@
-README
-freenect.c
-setup.py
-freenect.egg-info/PKG-INFO
-freenect.egg-info/SOURCES.txt
-freenect.egg-info/dependency_links.txt
-freenect.egg-info/top_level.txt
